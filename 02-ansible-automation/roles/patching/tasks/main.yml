@@ -1,0 +1,102 @@
+---
+- name: Assert supported OS family
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family in ["Debian", "RedHat"]
+    fail_msg: "Unsupported OS family: {{ ansible_os_family }}. Only Debian and RedHat are supported."
+    success_msg: "OS family check passed: {{ ansible_os_family }}"
+  tags: [patching]
+
+- name: Patch system
+  become: true
+  tags: [patching]
+  block:
+    - name: Update apt cache (Debian)
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+      when: ansible_os_family == "Debian"
+
+    - name: Install updates (Debian)
+      ansible.builtin.apt:
+        upgrade: safe
+        autoremove: true
+        autoclean: true
+      register: apt_upgrade_result
+      when: ansible_os_family == "Debian"
+
+    - name: Install updates (RedHat)
+      ansible.builtin.yum:
+        name: "*"
+        state: latest
+        update_cache: true
+      register: yum_upgrade_result
+      when: ansible_os_family == "RedHat"
+
+    - name: Check if reboot is required (Debian)
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: debian_reboot_file
+      when: ansible_os_family == "Debian"
+
+    - name: Check if reboot is required (RedHat)
+      ansible.builtin.command:
+        cmd: needs-restarting -r
+      register: redhat_reboot_check
+      changed_when: false
+      failed_when: redhat_reboot_check.rc > 1
+      when: ansible_os_family == "RedHat"
+
+    - name: Set reboot_required fact
+      ansible.builtin.set_fact:
+        reboot_required: >-
+          {{
+            (ansible_os_family == "Debian" and debian_reboot_file.stat.exists | default(false)) or
+            (ansible_os_family == "RedHat" and redhat_reboot_check.rc | default(0) == 1)
+          }}
+      tags: [patching]
+
+    - name: Reboot if required
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ reboot_timeout }}"
+        msg: "Reboot triggered by Ansible patching role"
+        pre_reboot_delay: 5
+        post_reboot_delay: 15
+      when:
+        - reboot_required | bool
+        - patch_reboot_required | bool
+      notify: send patch notification
+
+    - name: Wait for host to come back after reboot
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: "{{ reboot_timeout }}"
+      when:
+        - reboot_required | bool
+        - patch_reboot_required | bool
+
+  rescue:
+    - name: Handle patching failure
+      ansible.builtin.debug:
+        msg: >-
+          Patching failed on {{ inventory_hostname }}.
+          Failed task: {{ ansible_failed_task.name }}.
+          Error: {{ ansible_failed_result.msg | default('unknown error') }}
+
+    - name: Fail with descriptive message
+      ansible.builtin.fail:
+        msg: "Patching role failed on {{ inventory_hostname }} — see debug output above"
+
+- name: Print patch summary
+  ansible.builtin.debug:
+    msg:
+      - "════════════════════════════════════"
+      - "  Patch Summary"
+      - "════════════════════════════════════"
+      - "  Host     : {{ inventory_hostname }}"
+      - "  OS       : {{ ansible_distribution }} {{ ansible_distribution_version }}"
+      - "  Packages : {{ (apt_upgrade_result.stdout_lines | default([])) | length or
+                         (yum_upgrade_result.changes | default({})).updated | default([]) | length }} updated"
+      - "  Reboot   : {{ reboot_required | default(false) | bool | ternary('yes — rebooted', 'no — not required') }}"
+      - "════════════════════════════════════"
+  tags: [patching]

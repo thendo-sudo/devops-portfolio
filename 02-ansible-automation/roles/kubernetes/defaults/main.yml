@@ -1,0 +1,5 @@
+---
+k8s_version: "1.28"
+pod_network_cidr: "192.168.0.0/16"
+calico_version: "v3.27.3"
+containerd_config_file: /etc/containerd/config.toml
