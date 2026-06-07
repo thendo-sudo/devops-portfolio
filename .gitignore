@@ -1,0 +1,24 @@
+# Terraform
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform/
+.terraform.lock.hcl
+crash.log
+
+# Azure
+.azure/
+
+# SSH Keys
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+
+# Environment files
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
