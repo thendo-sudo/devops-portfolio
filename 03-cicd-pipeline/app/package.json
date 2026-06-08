@@ -1,0 +1,13 @@
+{
+  "name": "devops-portfolio-app",
+  "version": "1.0.0",
+  "description": "Simple Express app for CI/CD pipeline demo",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "test": "node -e \"const http = require('http'); const req = http.get('http://localhost:3000/health', (res) => { let data = ''; res.on('data', chunk => data += chunk); res.on('end', () => { const body = JSON.parse(data); if (body.status === 'ok') { console.log('Health check passed'); process.exit(0); } else { process.exit(1); } }); }); req.on('error', () => process.exit(1));\""
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
