@@ -1,0 +1,22 @@
+# Managed by Ansible — do not edit manually
+version = 2
+
+[grpc]
+  address = "/run/containerd/containerd.sock"
+
+[plugins."io.containerd.grpc.v1.cri"]
+  sandbox_image = "registry.k8s.io/pause:3.9"
+
+  [plugins."io.containerd.grpc.v1.cri".cni]
+    bin_dir  = "/opt/cni/bin"
+    conf_dir = "/etc/cni/net.d"
+
+  [plugins."io.containerd.grpc.v1.cri".containerd]
+
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+        runtime_type = "io.containerd.runc.v2"
+
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+          SystemdCgroup = true

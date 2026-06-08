@@ -1,0 +1,11 @@
+---
+common_packages:
+  - curl
+  - wget
+  - vim
+  - git
+  - htop
+  - net-tools
+  - unzip
+
+chrony_config_file: /etc/chrony/chrony.conf

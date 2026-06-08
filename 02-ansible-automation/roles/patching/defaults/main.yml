@@ -1,0 +1,4 @@
+---
+reboot_timeout: 600
+patch_reboot_required: true
+pre_patch_snapshot: false

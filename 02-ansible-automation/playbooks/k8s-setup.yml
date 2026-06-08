@@ -1,0 +1,29 @@
+---
+# Kubernetes setup playbook — controlplane must complete before workers join
+# Usage: ansible-playbook playbooks/k8s-setup.yml
+
+- name: Configure controlplane node
+  hosts: controlplane
+  become: true
+  gather_facts: true
+  tags: [kubernetes, k8s]
+
+  roles:
+    - role: common
+      tags: [common, kubernetes, k8s]
+
+    - role: kubernetes
+      tags: [kubernetes, k8s]
+
+- name: Configure worker nodes
+  hosts: workers
+  become: true
+  gather_facts: true
+  tags: [kubernetes, k8s]
+
+  roles:
+    - role: common
+      tags: [common, kubernetes, k8s]
+
+    - role: kubernetes
+      tags: [kubernetes, k8s]
