@@ -1,0 +1,25 @@
+---
+# Patching-only playbook — prompts for confirmation before applying updates
+# Usage: ansible-playbook playbooks/patch.yml
+
+- name: Patch all hosts
+  hosts: all
+  become: true
+  gather_facts: true
+  tags: [patching]
+
+  vars_prompt:
+    - name: confirm_patch
+      prompt: "This will patch and potentially reboot all hosts. Type 'yes' to confirm"
+      private: false
+
+  pre_tasks:
+    - name: Abort if patching not confirmed
+      ansible.builtin.fail:
+        msg: "Patching cancelled. Re-run and enter 'yes' to proceed."
+      when: confirm_patch | lower != 'yes'
+      tags: [always]
+
+  roles:
+    - role: patching
+      tags: [patching]

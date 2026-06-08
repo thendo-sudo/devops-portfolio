@@ -1,0 +1,6 @@
+---
+env: production
+timezone: Africa/Johannesburg
+ntp_servers:
+  - 0.za.pool.ntp.org
+  - 1.za.pool.ntp.org

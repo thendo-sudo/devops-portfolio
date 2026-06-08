@@ -1,0 +1,19 @@
+---
+- name: send patch notification
+  ansible.builtin.debug:
+    msg: >-
+      [PATCH NOTIFICATION] {{ inventory_hostname }} was successfully patched
+      and rebooted at {{ ansible_date_time.iso8601 | default('unknown time') }}.
+      OS: {{ ansible_distribution }} {{ ansible_distribution_version }}.
+  # Extend this handler to send real alerts, for example:
+  #
+  # community.general.slack:
+  #   token: "{{ slack_token }}"
+  #   msg: "{{ inventory_hostname }} patched and rebooted"
+  #   channel: "#ops-alerts"
+  #
+  # community.general.mail:
+  #   host: "{{ smtp_host }}"
+  #   to: "{{ alert_email }}"
+  #   subject: "Patch complete: {{ inventory_hostname }}"
+  #   body: "{{ inventory_hostname }} was patched and rebooted successfully"

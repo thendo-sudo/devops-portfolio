@@ -1,0 +1,24 @@
+---
+# Master playbook — runs full stack in order: patch → common baseline → kubernetes
+# Usage: ansible-playbook playbooks/site.yml
+
+- name: Apply baseline configuration to all hosts
+  hosts: all
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: patching
+      tags: [common, patching]
+
+    - role: common
+      tags: [common]
+
+- name: Set up Kubernetes cluster
+  hosts: k8s
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: kubernetes
+      tags: [kubernetes, k8s]

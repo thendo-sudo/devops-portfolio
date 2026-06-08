@@ -1,0 +1,242 @@
+---
+# ── Kernel modules ────────────────────────────────────────────────────────────
+
+- name: Make kernel modules persistent
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  tags: [kubernetes, k8s]
+
+- name: Load overlay kernel module
+  community.general.modprobe:
+    name: overlay
+    state: present
+  become: true
+  tags: [kubernetes, k8s]
+
+- name: Load br_netfilter kernel module
+  community.general.modprobe:
+    name: br_netfilter
+    state: present
+  become: true
+  tags: [kubernetes, k8s]
+
+# ── Sysctl ────────────────────────────────────────────────────────────────────
+
+- name: Set sysctl parameters for k8s networking
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_file: /etc/sysctl.d/k8s.conf
+    reload: true
+  loop:
+    - { key: "net.bridge.bridge-nf-call-iptables",  value: "1" }
+    - { key: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+    - { key: "net.ipv4.ip_forward",                 value: "1" }
+  become: true
+  tags: [kubernetes, k8s]
+
+# ── containerd ────────────────────────────────────────────────────────────────
+
+- name: Create /etc/apt/keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+  become: true
+  tags: [kubernetes, k8s]
+
+- name: Add Docker GPG key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+    force: false
+  become: true
+  tags: [kubernetes, k8s]
+
+- name: Add Docker apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ ansible_architecture | replace('x86_64', 'amd64') }}
+      signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/ubuntu
+      {{ ansible_distribution_release }} stable
+    state: present
+    filename: docker
+  become: true
+  tags: [kubernetes, k8s]
+
+- name: Install containerd
+  ansible.builtin.apt:
+    name: containerd.io
+    state: present
+    update_cache: true
+  become: true
+  notify: restart containerd
+  tags: [kubernetes, k8s]
+
+- name: Ensure /etc/containerd directory exists
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+  become: true
+  tags: [kubernetes, k8s]
+
+- name: Configure containerd with SystemdCgroup
+  ansible.builtin.template:
+    src: containerd-config.toml.j2
+    dest: "{{ containerd_config_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart containerd
+  tags: [kubernetes, k8s]
+
+- name: Enable and start containerd
+  ansible.builtin.service:
+    name: containerd
+    state: started
+    enabled: true
+  become: true
+  tags: [kubernetes, k8s]
+
+# ── Kubernetes packages ───────────────────────────────────────────────────────
+
+- name: Install apt transport prerequisites
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gpg
+    state: present
+  become: true
+  tags: [kubernetes, k8s]
+
+- name: Add Kubernetes GPG key
+  ansible.builtin.get_url:
+    url: "https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/Release.key"
+    dest: /etc/apt/keyrings/kubernetes.asc
+    mode: "0644"
+    force: false
+  become: true
+  tags: [kubernetes, k8s]
+
+- name: Add Kubernetes apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes.asc] https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/ /"
+    state: present
+    filename: kubernetes
+  become: true
+  tags: [kubernetes, k8s]
+
+- name: Install kubelet, kubeadm, kubectl
+  ansible.builtin.apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    update_cache: true
+  become: true
+  notify: restart kubelet
+  tags: [kubernetes, k8s]
+
+- name: Hold kubernetes packages at current version
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  become: true
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+  tags: [kubernetes, k8s]
+
+- name: Enable kubelet service
+  ansible.builtin.service:
+    name: kubelet
+    enabled: true
+  become: true
+  tags: [kubernetes, k8s]
+
+# ── Cluster initialization (controlplane only) ────────────────────────────────
+
+- name: Initialize Kubernetes cluster
+  ansible.builtin.command:
+    cmd: >
+      kubeadm init
+      --pod-network-cidr={{ pod_network_cidr }}
+      --apiserver-advertise-address={{ ansible_host }}
+    creates: /etc/kubernetes/admin.conf
+  register: kubeadm_init_result
+  become: true
+  when: inventory_hostname in groups['controlplane']
+  tags: [kubernetes, k8s]
+
+# ── kubeconfig ────────────────────────────────────────────────────────────────
+
+- name: Create .kube directory for admin user
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+  become: true
+  when: inventory_hostname in groups['controlplane']
+  tags: [kubernetes, k8s]
+
+- name: Copy admin kubeconfig for admin user
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"
+  become: true
+  when: inventory_hostname in groups['controlplane']
+  tags: [kubernetes, k8s]
+
+# ── Calico CNI (controlplane only) ────────────────────────────────────────────
+
+- name: Install Calico CNI
+  ansible.builtin.command:
+    cmd: "kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml"
+  register: calico_result
+  changed_when: "'created' in calico_result.stdout or 'configured' in calico_result.stdout"
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: inventory_hostname in groups['controlplane']
+  tags: [kubernetes, k8s]
+
+# ── Worker join ───────────────────────────────────────────────────────────────
+
+- name: Get worker join command from controlplane
+  ansible.builtin.command:
+    cmd: kubeadm token create --print-join-command
+  register: join_command
+  changed_when: false
+  become: true
+  when: inventory_hostname == groups['controlplane'][0]
+  tags: [kubernetes, k8s]
+
+- name: Join worker nodes to cluster
+  ansible.builtin.command:
+    cmd: "{{ hostvars[groups['controlplane'][0]]['join_command'].stdout }}"
+    creates: /etc/kubernetes/kubelet.conf
+  become: true
+  when: inventory_hostname in groups['workers']
+  tags: [kubernetes, k8s]
