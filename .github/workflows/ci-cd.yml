@@ -1,0 +1,224 @@
+# Branch protection requirements (configure in GitHub repo settings):
+#   main:    Require status checks: test, build, security-scan
+#            Require branches to be up to date before merging
+#            Restrict pushes — only allow via pull request
+#   develop: Require status checks: test
+#            Allow direct pushes from maintainers
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+      - develop
+
+env:
+  IMAGE_NAME: devops-portfolio-app
+  REGISTRY: ghcr.io
+  IMAGE_FULL: ghcr.io/${{ github.repository_owner }}/devops-portfolio-app
+
+jobs:
+  # ──────────────────────────────────────────────
+  # JOB 1: Test — runs on every push, every branch
+  # ──────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: false
+    defaults:
+      run:
+        working-directory: 03-cicd-pipeline/app
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 03-cicd-pipeline/app/package.json
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Start server and run health check
+        run: |
+          node app.js &
+          SERVER_PID=$!
+          # Wait for server to be ready
+          for i in $(seq 1 10); do
+            if curl -sf http://localhost:3000/health > /dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          npm test
+          kill $SERVER_PID
+
+  # ────────────────────────────────────────────────────────────
+  # JOB 2: Build — runs after test, only on main or develop push
+  # ────────────────────────────────────────────────────────────
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: false
+    needs: test
+    if: |
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      image_digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set image tag from git SHA
+        id: meta
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "image_tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_TAG=${SHORT_SHA}" >> "$GITHUB_ENV"
+          echo "Image will be tagged: ${{ env.IMAGE_FULL }}:${SHORT_SHA}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: 03-cicd-pipeline/app
+          file: 03-cicd-pipeline/app/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_FULL }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_FULL }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────
+  # JOB 3: Security Scan — Trivy scan on the built image
+  # ─────────────────────────────────────────────────────────
+  security-scan:
+    name: Security Scan (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: false
+    needs: build
+
+    permissions:
+      security-events: write  # Required to upload SARIF results
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull image for scanning
+        run: docker pull ${{ env.IMAGE_FULL }}:${{ needs.build.outputs.image_tag }}
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_FULL }}:${{ needs.build.outputs.image_tag }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run Trivy table summary (for logs)
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_FULL }}:${{ needs.build.outputs.image_tag }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: '0'
+
+  # ───────────────────────────────────────────────────────
+  # JOB 4: Deploy — runs after build + scan, main only
+  # ───────────────────────────────────────────────────────
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: false
+    needs:
+      - build
+      - security-scan
+    if: |
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+
+    environment:
+      name: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Print deployment summary
+        run: |
+          echo "══════════════════════════════════════════"
+          echo "  DEPLOYMENT SUMMARY"
+          echo "══════════════════════════════════════════"
+          echo "  App        : ${{ env.IMAGE_NAME }}"
+          echo "  Registry   : ${{ env.REGISTRY }}"
+          echo "  Image      : ${{ env.IMAGE_FULL }}"
+          echo "  Tag (SHA)  : ${{ needs.build.outputs.image_tag }}"
+          echo "  Full ref   : ${{ env.IMAGE_FULL }}:${{ needs.build.outputs.image_tag }}"
+          echo "  Digest     : ${{ needs.build.outputs.image_digest }}"
+          echo "  Branch     : ${{ github.ref_name }}"
+          echo "  Commit     : ${{ github.sha }}"
+          echo "  Actor      : ${{ github.actor }}"
+          echo "  Run ID     : ${{ github.run_id }}"
+          echo "  Triggered  : ${{ github.event_name }}"
+          echo "  Timestamp  : $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          echo "══════════════════════════════════════════"
+
+      - name: Annotate deployment in GitHub
+        run: |
+          echo "### Deployment to production" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field      | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image      | \`${{ env.IMAGE_FULL }}:${{ needs.build.outputs.image_tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit SHA | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Actor      | ${{ github.actor }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Timestamp  | $(date -u '+%Y-%m-%dT%H:%M:%SZ') |" >> "$GITHUB_STEP_SUMMARY"
