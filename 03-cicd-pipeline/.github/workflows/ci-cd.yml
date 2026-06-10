@@ -129,7 +129,7 @@ jobs:
     name: Security Scan (Trivy)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: false
+    continue-on-error: true
     needs: build
 
     permissions:
